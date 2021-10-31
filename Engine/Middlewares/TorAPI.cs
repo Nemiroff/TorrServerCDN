@@ -6,7 +6,6 @@ using System.IO;
 using System;
 using System.Threading;
 using System.Diagnostics;
-using System.Net.Sockets;
 using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Net.Http.Headers;
@@ -30,17 +29,38 @@ namespace TSApi.Engine.Middlewares
         #endregion
 
         #region CheckPort
-        public static bool CheckPort(int port)
+        async public static ValueTask<bool> CheckPort(int port, HttpContext httpContext)
         {
             try
             {
-                using (Socket s = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+                bool servIsWork = false;
+                DateTime endTimeCheckort = DateTime.Now.AddSeconds(8);
+
+                while (true)
                 {
-                    int millisecondsTimeout = 900; // 900ms
-                    IAsyncResult result = s.BeginConnect("127.0.0.1", port, null, null);
-                    result.AsyncWaitHandle.WaitOne(millisecondsTimeout, true);
-                    return s.Connected;
+                    try
+                    {
+                        if (DateTime.Now > endTimeCheckort)
+                            break;
+
+                        await Task.Delay(200);
+
+                        using (var client = new HttpClient())
+                        {
+                            client.Timeout = TimeSpan.FromSeconds(2);
+
+                            var response = await client.GetAsync($"http://127.0.0.1:{port}", HttpCompletionOption.ResponseHeadersRead, httpContext.RequestAborted);
+                            if (response.StatusCode == System.Net.HttpStatusCode.OK)
+                            {
+                                servIsWork = true;
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
                 }
+
+                return servIsWork;
             }
             catch
             {
@@ -65,6 +85,9 @@ namespace TSApi.Engine.Middlewares
             
             if (!db.TryGetValue(userData.login, out TorInfo info))
             {
+                string inDir = "/opt/TSApi";
+                string torPath = userData.torPath ?? "master";
+
                 #region TorInfo
                 info = new TorInfo()
                 {
@@ -77,57 +100,50 @@ namespace TSApi.Engine.Middlewares
                 #endregion
 
                 #region Создаем папку пользователя
-                string inDir = "/opt/TSApi";
-                string outFile = $"{inDir}/sandbox/{userData.login}/master";
-
-                if (!File.Exists(outFile)) //Если нет бинарника торсерва в папке юзера, то
+                if (!File.Exists($"sandbox/{userData.login}/config.db"))
                 {
-                    Directory.CreateDirectory($"sandbox/{userData.login}"); //Создаем папку юзера
-                    Bash.Run($"ln -s {inDir}/dl/master/TorrServer {outFile}"); // Создаем бинарник для юзера
+                    Directory.CreateDirectory($"sandbox/{userData.login}");
+                    File.Copy($"dl/{torPath}/config.db", $"sandbox/{userData.login}/config.db");
                 }
-                #endregion
-
-                #region Копируем настройки если их нет
-                if (!File.Exists($"sandbox/{userData.login}/config.db")) //Если нет базы в папке пользователя
-                        File.Copy($"dl/master/config.db", $"sandbox/{userData.login}/config.db"); // Копируем начальную базу
                 #endregion
 
                 #region Запускаем TorrServer
                 restart: info.thread = new Thread(() =>
                 {
-                    string comand = $"{outFile} -p {info.port} -d {inDir}/sandbox/{userData.login} >/dev/null 2>&1"; // -r 
+                    try
+                    {
+                        string comand = $"{inDir}/dl/{torPath}/TorrServer -p {info.port} -d {inDir}/sandbox/{info.user.login} >/dev/null 2>&1"; // -r 
 
-                    var processInfo = new ProcessStartInfo();
-                    processInfo.FileName = "/bin/bash";
-                    processInfo.Arguments = $" -c \"{comand}\"";
+                        var processInfo = new ProcessStartInfo();
+                        processInfo.FileName = "/bin/bash";
+                        processInfo.Arguments = $" -c \"{comand}\"";
 
-                    info.process = Process.Start(processInfo);
-                    info.process.WaitForExit();
+                        info.process = Process.Start(processInfo);
+                        info.process.WaitForExit();
+                    }
+                    catch { }
+
+                    info.OnProcessForExit();
                 });
 
                 info.thread.Start();
                 #endregion
 
                 #region Проверяем доступность сервера
-                bool servIsWork = false;
-
-                for (int i = 0; i < 25; i++) // 5 секунд
-                {
-                    await Task.Delay(200);
-
-                    if (CheckPort(info.port))
-                    {
-                        servIsWork = true;
-                        break;
-                    }
-                }
-
-                if (servIsWork == false)
+                if (await CheckPort(info.port, httpContext) == false)
                 {
                     info.Dispose();
                     info.port = random.Next(60000, 62000);
                     goto restart;
                 }
+                #endregion
+
+                #region Отслеживанием падение процесса
+                info.processForExit += (s, e) =>
+                {
+                    info.Dispose();
+                    db.Remove(info.user.login);
+                };
                 #endregion
             }
 
@@ -138,12 +154,52 @@ namespace TSApi.Engine.Middlewares
             #region settings
             if (httpContext.Request.Path.Value.StartsWith("/settings"))
             {
+                if (httpContext.Request.Method != "POST")
+                {
+                    httpContext.Response.StatusCode = 404;
+                    await httpContext.Response.WriteAsync("404 page not found");
+                    return;
+                }
+
                 using (HttpClient client = new HttpClient())
                 {
-                    client.Timeout = TimeSpan.FromSeconds(5);
+                    client.Timeout = TimeSpan.FromSeconds(2);
 
-                    var res = await client.PostAsync($"http://127.0.0.1:{info.port}/settings", new StringContent("{\"action\":\"get\"}", Encoding.UTF8, "application/json"));
-                    await httpContext.Response.WriteAsync(await res.Content.ReadAsStringAsync());
+                    #region Данные запроса
+                    MemoryStream mem = new MemoryStream();
+                    await httpContext.Request.Body.CopyToAsync(mem);
+                    string requestJson = Encoding.UTF8.GetString(mem.ToArray());
+                    #endregion
+
+                    #region Актуальные настройки
+                    var response = await client.PostAsync($"http://127.0.0.1:{info.port}/settings", new StringContent("{\"action\":\"get\"}", Encoding.UTF8, "application/json"));
+                    string settingsJson = await response.Content.ReadAsStringAsync();
+
+                    if (requestJson.Trim() == "{\"action\":\"get\"}")
+                    {
+                        await httpContext.Response.WriteAsync(settingsJson);
+                        return;
+                    }
+
+                    if (!userData.allowedToChangeSettings)
+                    {
+                        await httpContext.Response.WriteAsync(string.Empty);
+                        return;
+                    }
+                    #endregion
+
+                    #region Обновляем настройки кеша 
+                    string ReaderReadAHead = Regex.Match(requestJson, "\"ReaderReadAHead\":([0-9]+)", RegexOptions.IgnoreCase).Groups[1].Value;
+                    string PreloadCache = Regex.Match(requestJson, "\"PreloadCache\":([0-9]+)", RegexOptions.IgnoreCase).Groups[1].Value;
+
+                    settingsJson = Regex.Replace(settingsJson, "\"ReaderReadAHead\":([0-9]+)", $"\"ReaderReadAHead\":{ReaderReadAHead}", RegexOptions.IgnoreCase);
+                    settingsJson = Regex.Replace(settingsJson, "\"PreloadCache\":([0-9]+)", $"\"PreloadCache\":{PreloadCache}", RegexOptions.IgnoreCase);
+
+                    await client.PostAsync($"http://127.0.0.1:{info.port}/settings", new StringContent(settingsJson, Encoding.UTF8, "application/json"));
+                    #endregion
+
+                    // Успех
+                    await httpContext.Response.WriteAsync(string.Empty);
                     return;
                 }
             }
@@ -213,7 +269,6 @@ namespace TSApi.Engine.Middlewares
                         value += $"; {val}";
 
                     response.Headers[header.Key] = Regex.Replace(value, "^; ", "");
-                    //response.Headers[header.Key] = header.Value.ToArray();
                 }
             }
             #endregion
@@ -224,7 +279,6 @@ namespace TSApi.Engine.Middlewares
             using (var responseStream = await responseMessage.Content.ReadAsStreamAsync())
             {
                 await CopyToAsyncInternal(response.Body, responseStream, context.RequestAborted, info);
-                //await responseStream.CopyToAsync(response.Body, context.RequestAborted);
             }
         }
         #endregion

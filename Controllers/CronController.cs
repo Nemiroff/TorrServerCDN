@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using TSApi.Engine.Middlewares;
@@ -26,7 +27,7 @@ namespace TSApi.Controllers
         #region CheckingNodes
         static bool workCheckingNodes = false;
 
-        public string CheckingNodes()
+        async public Task<string> CheckingNodes()
         {
             if (HttpContext.Connection.RemoteIpAddress.ToString() != "127.0.0.1")
                 return "Pwnd!";
@@ -47,7 +48,7 @@ namespace TSApi.Controllers
                     }
                     else
                     {
-                        if (TorAPI.CheckPort(node.Value.port) == false)
+                        if (await TorAPI.CheckPort(node.Value.port, HttpContext) == false)
                         {
                             node.Value.countError += 1;
                         }

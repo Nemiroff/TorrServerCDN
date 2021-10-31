@@ -15,15 +15,32 @@ namespace TSApi.Models
 
         public Thread thread { get; set; }
 
-        public Process process { get; set; }
-
         public DateTime lastActive { get; set; }
 
-        public int countError{ get; set; }
+        public int countError { get; set; }
 
+
+        #region process
+        public Process process { get; set; }
+
+        public event EventHandler processForExit;
+
+        public void OnProcessForExit()
+        {
+            processForExit?.Invoke(this, null);
+        }
+        #endregion
+
+        #region Dispose
+        bool IsDispose;
 
         public void Dispose()
         {
+            if (IsDispose)
+                return;
+
+            IsDispose = true;
+
             #region process
             try
             {
@@ -48,5 +65,6 @@ namespace TSApi.Models
             clientIp = null;
             thread = null;
         }
+        #endregion
     }
 }
