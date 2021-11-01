@@ -24,8 +24,8 @@ namespace TSApi.Engine.Middlewares
         }
         #endregion
 
-        #region IsLockHost
-        bool IsLockHost(HttpContext httpContext, string login)
+        #region IsLockHostOrUser
+        bool IsLockHostOrUser(HttpContext httpContext, string login)
         {
             string memKeyLocIP = $"memKeyLocIP:{login}:{DateTime.Today.Day}";
             string clientIP = httpContext.Connection.RemoteIpAddress.ToString();
@@ -73,7 +73,7 @@ namespace TSApi.Engine.Middlewares
                 string login = g[1].Value;
                 string passwd = g[2].Value;
 
-                if (IsLockHost(httpContext, login))
+                if (IsLockHostOrUser(httpContext, login))
                 {
                     httpContext.Response.StatusCode = 403;
                     return Task.CompletedTask;
@@ -101,8 +101,14 @@ namespace TSApi.Engine.Middlewares
             #region Обработка stream потока
             if (httpContext.Request.Method == "GET" && Regex.IsMatch(httpContext.Request.Path.Value, "^/(stream|play)"))
             {
-                if (TorAPI.db.FirstOrDefault(i => i.Value.clientIp == clientIp).Value is TorInfo info)
+                if (TorAPI.db.LastOrDefault(i => i.Value.clientIps.Contains(clientIp)).Value is TorInfo info)
                 {
+                    if (IsLockHostOrUser(httpContext, info.user.login))
+                    {
+                        httpContext.Response.StatusCode = 403;
+                        return Task.CompletedTask;
+                    }
+
                     httpContext.Features.Set(info.user);
                     return _next(httpContext);
                 }

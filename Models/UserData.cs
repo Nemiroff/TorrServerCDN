@@ -9,5 +9,10 @@
         public string torPath { get; set; }
 
         public bool allowedToChangeSettings { get; set; }
+
+
+        public bool IsShared { get; set; }
+
+        public int maxClientToSaredNod { get; set; } = 20;
     }
 }

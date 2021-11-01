@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using TSApi.Engine;
@@ -9,7 +10,7 @@ namespace TSApi.Models
     {
         public int port { get; set; }
 
-        public string clientIp { get; set; }
+        public HashSet<string> clientIps { get; set; } = new HashSet<string>();
 
         public UserData user { get; set; }
 
@@ -53,7 +54,12 @@ namespace TSApi.Models
             #region Bash
             try
             {
-                foreach (string line in Bash.Run($"ps axu | grep \"/sandbox/{user.login}/\" " + "| grep -v grep | awk '{print $2}'").Split("\n"))
+                string comand = $"ps axu | grep \"/sandbox/{user.login}/\" " + "| grep -v grep | awk '{print $2}'";
+
+                if (user.IsShared)
+                    comand = $"ps axu | grep \"/TorrServer -p {port} -r\" " + "| grep -v grep | awk '{print $2}'";
+
+                foreach (string line in Bash.Run(comand).Split("\n"))
                 {
                     if (int.TryParse(line, out int pid))
                         Bash.Run($"kill -9 {pid}");
@@ -62,7 +68,7 @@ namespace TSApi.Models
             catch { }
             #endregion
 
-            clientIp = null;
+            clientIps.Clear();
             thread = null;
         }
         #endregion

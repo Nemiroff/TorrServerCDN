@@ -20,6 +20,8 @@ namespace TSApi.Engine.Middlewares
 
         static Random random = new Random();
 
+        static int sharedNodId = 0;
+
         public static Dictionary<string, TorInfo> db = new Dictionary<string, TorInfo>();
 
         public TorAPI(RequestDelegate next)
@@ -82,8 +84,12 @@ namespace TSApi.Engine.Middlewares
             #endregion
 
             var userData = httpContext.Features.Get<UserData>();
-            
-            if (!db.TryGetValue(userData.login, out TorInfo info))
+
+            string dbKeyOrLogin = userData.login;
+            if (userData.IsShared)
+                dbKeyOrLogin = $"{userData.login}:{sharedNodId}";
+
+            if (!db.TryGetValue(dbKeyOrLogin, out TorInfo info))
             {
                 string inDir = "/opt/TSApi";
                 string torPath = userData.torPath ?? "master";
@@ -96,11 +102,11 @@ namespace TSApi.Engine.Middlewares
                     lastActive = DateTime.Now
                 };
 
-                db.Add(userData.login, info);
+                db.Add(dbKeyOrLogin, info);
                 #endregion
 
                 #region Создаем папку пользователя
-                if (!File.Exists($"sandbox/{userData.login}/config.db"))
+                if (!userData.IsShared && !File.Exists($"sandbox/{userData.login}/config.db"))
                 {
                     Directory.CreateDirectory($"sandbox/{userData.login}");
                     File.Copy($"dl/{torPath}/config.db", $"sandbox/{userData.login}/config.db");
@@ -112,7 +118,11 @@ namespace TSApi.Engine.Middlewares
                 {
                     try
                     {
-                        string comand = $"{inDir}/dl/{torPath}/TorrServer -p {info.port} -d {inDir}/sandbox/{info.user.login} >/dev/null 2>&1"; // -r 
+                        // https://github.com/YouROK/TorrServer
+                        string comand = $"{inDir}/dl/{torPath}/TorrServer -p {info.port} -d {inDir}/sandbox/{info.user.login} >/dev/null 2>&1";
+
+                        if (userData.IsShared)
+                            comand = $"{inDir}/dl/{torPath}/TorrServer -p {info.port} -r >/dev/null 2>&1";
 
                         var processInfo = new ProcessStartInfo();
                         processInfo.FileName = "/bin/bash";
@@ -142,14 +152,18 @@ namespace TSApi.Engine.Middlewares
                 info.processForExit += (s, e) =>
                 {
                     info.Dispose();
-                    db.Remove(info.user.login);
+                    db.Remove(dbKeyOrLogin);
                 };
                 #endregion
             }
 
             // Обновляем IP клиента и время последнего запроса
-            info.clientIp = httpContext.Connection.RemoteIpAddress.ToString();
+            info.clientIps.Add(httpContext.Connection.RemoteIpAddress.ToString());
             info.lastActive = DateTime.Now;
+
+            // Текущая нода использована
+            if (userData.IsShared && info.clientIps.Count > userData.maxClientToSaredNod)
+                sharedNodId++;
 
             #region settings
             if (httpContext.Request.Path.Value.StartsWith("/settings"))
@@ -181,7 +195,7 @@ namespace TSApi.Engine.Middlewares
                         return;
                     }
 
-                    if (!userData.allowedToChangeSettings)
+                    if (!userData.allowedToChangeSettings || userData.IsShared)
                     {
                         await httpContext.Response.WriteAsync(string.Empty);
                         return;
