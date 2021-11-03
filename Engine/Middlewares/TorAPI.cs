@@ -114,7 +114,7 @@ namespace TSApi.Engine.Middlewares
                 #endregion
 
                 #region Запускаем TorrServer
-                restart: info.thread = new Thread(() =>
+                info.thread = new Thread(() =>
                 {
                     try
                     {
@@ -143,8 +143,8 @@ namespace TSApi.Engine.Middlewares
                 if (await CheckPort(info.port, httpContext) == false)
                 {
                     info.Dispose();
-                    info.port = random.Next(60000, 62000);
-                    goto restart;
+                    db.Remove(dbKeyOrLogin);
+                    return;
                 }
                 #endregion
 
