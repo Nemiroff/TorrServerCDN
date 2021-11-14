@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Hosting;
+using NetworkPorts;
 using System.Net;
 
 namespace TSApi
@@ -15,7 +16,7 @@ namespace TSApi
             Host.CreateDefaultBuilder(args)
                 .ConfigureWebHostDefaults(webBuilder =>
                 {
-                    webBuilder.UseKestrel(op => op.Listen(IPAddress.Any, 80));
+                    webBuilder.UseKestrel(op => op.Listen(IPAddress.Any, NetworkPort.Http));
                     webBuilder.UseStartup<Startup>();
                 });
     }
